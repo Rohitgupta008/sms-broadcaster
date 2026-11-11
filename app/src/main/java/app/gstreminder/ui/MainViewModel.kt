@@ -94,6 +94,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         (running.isNotEmpty()) to running.sumOf { it.progress.getInt(SendWorker.KEY_SENT, 0) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false to 0)
 
+    val update: StateFlow<app.gstreminder.update.UpdateState> = app.gstreminder.update.Updater.state
+
+    init {
+        viewModelScope.launch { app.gstreminder.update.Updater.check() }
+    }
+
+    fun checkForUpdate() = viewModelScope.launch {
+        val r = app.gstreminder.update.Updater.check()
+        if (r is app.gstreminder.update.UpdateState.UpToDate) message.value = "You have the latest version."
+    }
+
+    fun installUpdate(info: app.gstreminder.update.UpdateInfo) {
+        val ctx = getApplication<Application>()
+        if (!app.gstreminder.update.Updater.canInstall(ctx)) {
+            message.value = "Allow \"Install unknown apps\" for GST Reminder, then come back and tap Update again."
+            app.gstreminder.update.Updater.openInstallPermissionSettings(ctx)
+            return
+        }
+        viewModelScope.launch { app.gstreminder.update.Updater.downloadAndInstall(ctx, info) }
+    }
+
     val importPreview = MutableStateFlow<ImportPreview?>(null)
     val importing = MutableStateFlow(false)
 

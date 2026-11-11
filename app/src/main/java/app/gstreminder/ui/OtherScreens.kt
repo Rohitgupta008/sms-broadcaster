@@ -280,7 +280,7 @@ fun SettingsScreen(vm: MainViewModel) {
                 value = template, onValueChange = { template = it }, label = { Text("Template") }, minLines = 3, modifier = Modifier.fillMaxWidth(),
                 supportingText = { Text("Placeholders: {name} {gstin} {period} {returns} {sender}") },
             )
-            val sample = MessageBuilder.build(template, "Shree Patidar Motors Private Limited", "23ABLCS4173K1Z0", "May-2026", Pending.GST_RETURN, sender)
+            val sample = MessageBuilder.build(template, "Sample Auto Motors Private Limited", "23ABCDE1234F1Z5", "May-2026", Pending.GST_RETURN, sender)
             Text(sample.text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             Text(
                 "${sample.info.chars} chars · ${sample.info.segments} SMS" + if (!sample.info.gsm) " · contains special characters (70 chars/SMS)" else "",
@@ -313,6 +313,23 @@ fun SettingsScreen(vm: MainViewModel) {
                     androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { sim = id to label; simMenu = false })
                 }
             }
+        }
+        Section("App version") {
+            val update by vm.update.collectAsStateWithLifecycle()
+            Text("Build ${app.gstreminder.update.Updater.currentBuild}")
+            Text(
+                when (val u = update) {
+                    is app.gstreminder.update.UpdateState.Checking -> "Checking…"
+                    is app.gstreminder.update.UpdateState.UpToDate -> "Up to date."
+                    is app.gstreminder.update.UpdateState.Available -> "Build ${u.info.build} is available – tap Update on the home screen."
+                    is app.gstreminder.update.UpdateState.Downloading -> "Downloading ${u.percent}%"
+                    is app.gstreminder.update.UpdateState.Installing -> "Installing…"
+                    is app.gstreminder.update.UpdateState.Error -> u.message
+                    else -> "The app checks for updates each time it opens."
+                },
+                style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
+            )
+            TextButton(onClick = { vm.checkForUpdate() }) { Text("Check for updates") }
         }
         Section("Tip") {
             Text(

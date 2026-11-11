@@ -136,7 +136,10 @@ fun DashboardScreen(vm: MainViewModel) {
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->
         if (cycle == null) {
-            EmptyState(Modifier.padding(pad), importing) { importFile() }
+            Column(Modifier.padding(pad)) {
+                UpdateBanner(vm)
+                EmptyState(Modifier, importing) { importFile() }
+            }
             return@Scaffold
         }
         val shown = remember(dealers, filter, query) {
@@ -146,6 +149,7 @@ fun DashboardScreen(vm: MainViewModel) {
             }
         }
         LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            item { UpdateBanner(vm) }
             item {
                 SummaryCard(vm, cycle!!.period, cycle!!.fileName, stats, quota, sending, ::onSend)
             }
@@ -171,6 +175,30 @@ fun DashboardScreen(vm: MainViewModel) {
                 DealerRow(d) { vm.open(Screen.Detail(d.id)) }
                 HorizontalDivider()
             }
+        }
+    }
+}
+
+/** Shown only when a newer build is available, downloading, or failed. */
+@Composable
+fun UpdateBanner(vm: MainViewModel) {
+    val state by vm.update.collectAsStateWithLifecycle()
+    val s = state
+    val (text, info, busy) = when (s) {
+        is app.gstreminder.update.UpdateState.Available -> Triple("New version available (build ${s.info.build}).", s.info, false)
+        is app.gstreminder.update.UpdateState.Downloading -> Triple("Downloading update… ${s.percent}%", null, true)
+        is app.gstreminder.update.UpdateState.Installing -> Triple("Installing… confirm on the Android screen.", null, true)
+        is app.gstreminder.update.UpdateState.Error -> if (s.info != null) Triple(s.message, s.info, false) else return
+        else -> return
+    }
+    Card(
+        Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            if (busy) CircularProgressIndicator(Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
+            if (info != null) Button(onClick = { vm.installUpdate(info) }) { Text("Update") }
         }
     }
 }

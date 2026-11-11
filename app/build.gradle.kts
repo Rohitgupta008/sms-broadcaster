@@ -13,18 +13,23 @@ android {
         applicationId = "app.gstreminder"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // Every CI build gets a higher number; the in-app updater compares against it.
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "1.0.$build"
     }
 
+    // The signing key is NOT in the repo. CI decodes it from GitHub Secrets into a temp file.
+    val keystoreFile = System.getenv("SIGNING_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
     signingConfigs {
-        // A fixed key committed to the repo so every CI build can update the installed app
-        // without uninstalling it (which would wipe the SMS history). Personal sideload use only.
-        create("shared") {
-            storeFile = file("signing.keystore")
-            storePassword = "gstreminder"
-            keyAlias = "gstreminder"
-            keyPassword = "gstreminder"
+        if (keystoreFile != null) {
+            create("release") {
+                storeFile = keystoreFile
+                storeType = "PKCS12"
+                storePassword = System.getenv("SIGNING_PASSWORD")
+                keyAlias = "gstreminder"
+                keyPassword = System.getenv("SIGNING_PASSWORD")
+            }
         }
     }
 
@@ -33,10 +38,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("shared")
-        }
-        debug {
-            signingConfig = signingConfigs.getByName("shared")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -45,7 +47,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 
