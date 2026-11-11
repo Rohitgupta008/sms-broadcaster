@@ -95,12 +95,12 @@ class MessageTest {
     @Test fun defaultMessageFitsOneSms() {
         val m = MessageBuilder.build(
             MessageBuilder.DEFAULT_TEMPLATE,
-            "Delta Highway Amenities Developers Private Limited",
+            "Delta Roadside Infra Developers Private Limited",
             "23AAAAA0004A1Z4", "May-2026", Pending.GST_RETURN, MessageBuilder.DEFAULT_SENDER,
         )
         assertEquals(1, m.info.segments, m.text)
         assertTrue(m.info.gsm)
-        assertTrue(m.text.startsWith("Dear Delta Highway Amenities Developers"), m.text)
+        assertTrue(m.text.startsWith("Dear Delta Roadside Infra Developers"), m.text)
         assertTrue(m.text.endsWith("-AC Indore-5"))
     }
 

@@ -53,7 +53,7 @@ object MessageBuilder {
         return Message(text, SmsText.info(text))
     }
 
-    /** "M/S Ghiya Oil Product Pvt.Ltd." -> ["Ghiya Oil Product Pvt Ltd", "Ghiya Oil Product"] */
+    /** "M/S Example Oil Product Pvt.Ltd." -> ["Example Oil Product Pvt Ltd", "Example Oil Product"] */
     fun nameVariants(raw: String): List<String> {
         var n = SmsText.sanitize(raw).trim().replace(Regex("\\s+"), " ")
         n = n.replace(Regex("(?i)^(m\\s*/\\s*s\\.?|messrs\\.?|m/s\\.?)\\s*"), "")

@@ -18,19 +18,49 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+
       - name: Unit tests
         run: ./gradlew :core:test --stacktrace
+
+      # The signing key lives in GitHub Secrets (Settings > Secrets and variables > Actions):
+      #   SIGNING_KEYSTORE_BASE64 = base64 of the .p12 keystore, SIGNING_PASSWORD = its password.
+      - name: Load signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::Secret SIGNING_KEYSTORE_BASE64 is not set: building an UNSIGNED apk (cannot be installed or released)."
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+          else
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing.p12"
+            echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/signing.p12" >> "$GITHUB_ENV"
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          fi
+
       - name: Build APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: ./gradlew :app:assembleRelease --stacktrace
-      - name: Rename APK
+
+      - name: Upload APK
+        if: env.SIGNED == 'true'
         run: cp app/build/outputs/apk/release/app-release.apk GST-Reminder.apk
+
       - uses: actions/upload-artifact@v4
+        if: env.SIGNED == 'true'
         with:
           name: GST-Reminder-apk
           path: GST-Reminder.apk
-      # Publish as a release so the APK can be downloaded straight from a phone (no zip).
+
+      - name: Signing key required for releases
+        if: env.SIGNED != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          echo "::error::Add the SIGNING_KEYSTORE_BASE64 and SIGNING_PASSWORD secrets (Settings > Secrets and variables > Actions) so main can publish a release."
+          exit 1
+
+      # Only builds of main become a release; the app auto-updates to the latest release.
       - name: Publish release
-        if: github.event_name != 'pull_request'
+        if: env.SIGNED == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}

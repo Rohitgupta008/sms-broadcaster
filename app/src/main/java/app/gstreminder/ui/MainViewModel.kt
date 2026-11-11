@@ -19,6 +19,10 @@ import app.gstreminder.repo
 import app.gstreminder.work.Scheduler
 import app.gstreminder.work.SendWorker
 import app.gstreminder.core.XlsxReader
+import app.gstreminder.core.PhoneNormalizer
+import app.gstreminder.update.UpdateInfo
+import app.gstreminder.update.UpdateState
+import app.gstreminder.update.Updater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -93,6 +97,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val running = (a + b + c).filter { it.state == WorkInfo.State.RUNNING }
         (running.isNotEmpty()) to running.sumOf { it.progress.getInt(SendWorker.KEY_SENT, 0) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false to 0)
+
+    val update: StateFlow<UpdateState> = Updater.state
+
+    init {
+        viewModelScope.launch { Updater.check() }
+    }
+
+    fun checkForUpdate() = viewModelScope.launch {
+        val r = Updater.check()
+        if (r is UpdateState.UpToDate) message.value = "You have the latest version."
+    }
+
+    fun installUpdate(info: UpdateInfo) {
+        val ctx = getApplication<Application>()
+        if (!Updater.canInstall(ctx)) {
+            message.value = "Allow \"Install unknown apps\" for GST Reminder, then come back and tap Update again."
+            Updater.openInstallPermissionSettings(ctx)
+            return
+        }
+        viewModelScope.launch { Updater.downloadAndInstall(ctx, info) }
+    }
 
     val importPreview = MutableStateFlow<ImportPreview?>(null)
     val importing = MutableStateFlow(false)
@@ -207,7 +232,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun requeue(id: Long) = viewModelScope.launch { repo.requeue(id); message.value = "Added back to the queue." }
 
     fun updatePhone(id: Long, raw: String): Boolean {
-        val phone = app.gstreminder.core.PhoneNormalizer.normalize(raw)
+        val phone = PhoneNormalizer.normalize(raw)
         if (raw.isNotBlank() && phone == null) { message.value = "Enter a valid 10-digit mobile number."; return false }
         viewModelScope.launch { repo.updatePhone(id, phone); message.value = "Mobile updated." }
         return true
