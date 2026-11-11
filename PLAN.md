@@ -132,7 +132,28 @@ Dependencies: Compose, Room, WorkManager, DataStore. No network libraries and no
 - Unit tests: xlsx parsing, status parsing ("Not Filed", "N", blank…), phone normalisation (+91, 0-prefix, spaces), message length ≤160 / GSM-7 check, quota roll-over across midnight, priority order.
 - Manual test on a real phone with a 5-row sample sheet and a low limit (e.g. 3/day) to check the carry-over.
 
-## 9. Open questions (please confirm)
+## 9. Findings from the sample file (`Vandana_NonFilers_Match2.xlsx`)
+
+| Sheet | Layout | Rows | Mobile? | STATUS |
+|---|---|---|---|---|
+| `Vandana Non-Filers` | Row 1 = title (officer, office, **Return Period: 05/2026**), row 2 = summary, **row 3 = header** | 98 | ❌ none | `FILED` 36 / blank 62 |
+| `Sheet1` | Row 1 = header | 62 (all also in sheet 1) | ✅ `MOBILE NO.` (stored as numbers) | `FILED` 29 / blank 33 |
+
+Columns: `# / SRN, GSTIN, Trade Name, Office, Jurisdiction, Turnover, STATUS, MOBILE NO.`
+
+Changes to the plan:
+- **The header row is found automatically**: the app scans the first 10 rows of each sheet for a row containing "GSTIN", so title and summary rows are skipped.
+- **Sheets are merged by GSTIN**: the mobile number is taken from whichever sheet has one, and `STATUS` comes from the sheet that has the mobile numbers (assumed to be the latest). The two sheets disagree for some dealers, e.g. Alkraft is blank in one and FILED in the other. A dealer with no mobile number is shown as **"No mobile"** (36 dealers in this file) and is never queued.
+- **One STATUS column, not separate GSTR-1 / 3B columns**: `FILED` means filed, and blank or anything else means not filed. If a future sheet has separate GSTR-1 and 3B columns, the three message versions from 4.2 are used instead.
+- **Period** is read from the title text (`Return Period: 05/2026`). If it isn't found, the app asks during import.
+- **Mobile numbers** are read whether stored as numbers or text, and normalised to 10 digits.
+- Extra columns (Office, Jurisdiction, Turnover) are kept and shown on the dealer detail screen. Jurisdiction (State / Centre) can be used as a filter.
+- Trade names are at most 46 characters in this file. The default message is **152 characters, 1 SMS**:
+  `Dear Highway Amenities Developers Pvt Ltd, GSTIN 23AAECH6959C1ZN: GST return for 05/2026 not filed. Please file urgently to avoid late fee. -AC Indore-5`
+
+With this file: 33 dealers have not filed and have a mobile number, so all the SMS go out in **1 day** within the 100 limit.
+
+## 10. Open questions (please confirm)
 1. **Excel format** – what are the exact column names? Could you share a sample with dummy data? Is GSTR-1 / 3B status in two columns, or are there separate "filed" and "not filed" sheets?
 2. **Mobile number** – is it in the same sheet? Could one dealer have more than one number?
 3. **Message language** – English only (recommended for the 160-character limit), or Hindi or Marathi as well?
