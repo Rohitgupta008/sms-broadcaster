@@ -22,8 +22,9 @@ SMS limit (default 100) and carries the rest over to the next day automatically.
 - **Export** a CSV status report.
 
 ## Install
-1. Open the repo's **Actions** tab → latest **Build APK** run → download the `GST-Reminder-apk` artifact (a zip).
-2. Unzip it, copy `GST-Reminder.apk` to the phone and open it (allow "Install unknown apps" once).
+1. On the phone, open **https://github.com/Rohitgupta008/sms-broadcaster/releases/latest/download/GST-Reminder.apk**
+   (sign in to GitHub in the browser first if the repo is private).
+2. Open the downloaded file and allow "Install unknown apps" for your browser once.
 3. Later builds are signed with the same key, so they install as updates and keep your data.
 
 > The app is installed directly (not from Play Store), because Google Play only allows SMS-sending
