@@ -154,6 +154,9 @@ Changes to the plan:
 With this file: 33 dealers have not filed and have a mobile number, so all the SMS go out in **1 day** within the 100 limit.
 
 ## 10. Open questions (please confirm)
+
+_Resolved: Sheet1 (with mobile numbers) is the final list; future files will have one sheet. Implemented in v1 — see README._
+
 1. **Excel format** – what are the exact column names? Could you share a sample with dummy data? Is GSTR-1 / 3B status in two columns, or are there separate "filed" and "not filed" sheets?
 2. **Mobile number** – is it in the same sheet? Could one dealer have more than one number?
 3. **Message language** – English only (recommended for the 160-character limit), or Hindi or Marathi as well?
