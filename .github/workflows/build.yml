@@ -44,6 +44,18 @@ jobs:
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: ./gradlew :app:assemblePersonalRelease :app:bundlePlayRelease --stacktrace
 
+      # Safety net: the Play edition must never ask for SMS / install permissions.
+      - name: Check edition permissions
+        run: |
+          for f in personal play; do
+            m=$(find app/build/intermediates -path "*${f}Release*" -name AndroidManifest.xml | grep -i merged_manifest | head -1)
+            echo "== $f ($m)"; grep -o 'uses-permission[^>]*name="[^"]*"' "$m" | sed 's/.*name=//' || true
+          done
+          play=$(find app/build/intermediates -path "*playRelease*" -name AndroidManifest.xml | grep -i merged_manifest | head -1)
+          if grep -Eq 'SEND_SMS|READ_SMS|RECEIVE_SMS|READ_PHONE_STATE|REQUEST_INSTALL_PACKAGES' "$play"; then
+            echo "::error::Play edition contains a restricted permission"; exit 1
+          fi
+
       - name: Collect outputs
         if: env.SIGNED == 'true'
         run: |
