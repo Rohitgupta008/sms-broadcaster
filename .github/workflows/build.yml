@@ -37,20 +37,31 @@ jobs:
             echo "SIGNED=true" >> "$GITHUB_ENV"
           fi
 
-      - name: Build APK
+      # personal = APK for your phone (GitHub releases, self-updating, automatic SMS)
+      # play     = App Bundle for Google Play (no SMS permission, one-tap sending only)
+      - name: Build both editions
         env:
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-        run: ./gradlew :app:assembleRelease --stacktrace
+        run: ./gradlew :app:assemblePersonalRelease :app:bundlePlayRelease --stacktrace
 
-      - name: Upload APK
+      - name: Collect outputs
         if: env.SIGNED == 'true'
-        run: cp app/build/outputs/apk/release/app-release.apk GST-Reminder.apk
+        run: |
+          cp app/build/outputs/apk/personal/release/app-personal-release.apk GST-Reminder.apk
+          cp app/build/outputs/bundle/playRelease/app-play-release.aab GST-Reminder-play.aab
 
       - uses: actions/upload-artifact@v4
         if: env.SIGNED == 'true'
         with:
-          name: GST-Reminder-apk
+          name: GST-Reminder-personal-apk
           path: GST-Reminder.apk
+
+      # Download this from the run page and upload it in the Play Console when releasing.
+      - uses: actions/upload-artifact@v4
+        if: env.SIGNED == 'true'
+        with:
+          name: GST-Reminder-play-aab
+          path: GST-Reminder-play.aab
 
       - name: Signing key required for releases
         if: env.SIGNED != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

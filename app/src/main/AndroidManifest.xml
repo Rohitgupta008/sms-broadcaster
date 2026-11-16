@@ -3,12 +3,6 @@
 
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
-    <uses-permission android:name="android.permission.SEND_SMS" />
-    <!-- Only used to list SIM cards on dual-SIM phones. -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <!-- In-app updates: check GitHub for a newer build and install it. -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".GstApp"
@@ -29,12 +23,5 @@
             </intent-filter>
         </activity>
 
-        <receiver
-            android:name=".sms.SmsResultReceiver"
-            android:exported="false" />
-
-        <receiver
-            android:name=".update.InstallResultReceiver"
-            android:exported="false" />
     </application>
 </manifest>

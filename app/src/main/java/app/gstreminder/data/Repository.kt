@@ -145,6 +145,27 @@ class Repository(private val db: AppDb, val settings: Settings) {
         dealers.updateAll(failed.map { it.copy(status = SmsStatus.QUEUED, attempts = 0, lastError = null, updatedAt = System.currentTimeMillis()) })
     }
 
+    // ---------------------------------------------------------------- one-tap sending
+
+    /** Next queued dealer for one-tap sending, in the same order as automatic sending. */
+    suspend fun nextForOneTap(cycleId: Long, skip: Set<Long>): Dealer? =
+        dealers.forCycle(cycleId)
+            .filter { it.status == SmsStatus.QUEUED && it.phone != null && it.id !in skip }
+            .minWithOrNull(compareBy<Dealer>({ it.attempts }, { it.priority }, { it.rowNum }))
+
+    /** The user sent this SMS themselves from the Messages app. Counts towards today's limit. */
+    suspend fun markSentByUser(id: Long, text: String, segments: Int) {
+        val d = dealers.get(id) ?: return
+        val now = System.currentTimeMillis()
+        dealers.update(
+            d.copy(
+                status = SmsStatus.SENT, message = text, segments = segments, attempts = d.attempts + 1,
+                lastError = null, sentAt = now, deliveredAt = null, updatedAt = now,
+            )
+        )
+        usage.add(today(), segments)
+    }
+
     // ---------------------------------------------------------------- send results
 
     /** Called by the sent-status broadcast for each SMS part. */

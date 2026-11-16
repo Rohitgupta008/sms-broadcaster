@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import app.gstreminder.BuildConfig
 import app.gstreminder.core.CsvReader
 import app.gstreminder.core.DealerSheetParser
 import app.gstreminder.core.ImportException
@@ -60,6 +61,22 @@ data class Quota(val used: Int, val limit: Int) {
     val remaining get() = (limit - used).coerceAtLeast(0)
 }
 
+data class OneTapSession(
+    val dealer: Dealer,
+    val text: String,
+    val segments: Int,
+    val phase: Phase,
+    /** Sent so far in this session. */
+    val sent: Int,
+    /** Set when sending to one dealer only (from the dealer page). */
+    val singleId: Long?,
+    val skipped: Set<Long>,
+    /** Changes every time the Messages app should be (re)opened. */
+    val launchId: Int,
+) {
+    enum class Phase { OPEN_SMS, CONFIRM, NOT_SENT }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val repo = app.repo
@@ -101,7 +118,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val update: StateFlow<UpdateState> = Updater.state
 
     init {
-        viewModelScope.launch { Updater.check() }
+        if (BuildConfig.SELF_UPDATE) viewModelScope.launch { Updater.check() }
     }
 
     fun checkForUpdate() = viewModelScope.launch {
@@ -214,6 +231,86 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Scheduler.sendNow(getApplication(), id)
             message.value = "Sending…"
         }
+    }
+
+    // ------------------------------------------------------------ one-tap sending
+    //
+    // The app opens the phone's Messages app with the reminder filled in; the user taps Send and
+    // comes back. On return the dealer is marked Sent (after a short countdown that can be cancelled)
+    // and the next dealer opens automatically.
+
+    val oneTap = MutableStateFlow<OneTapSession?>(null)
+    private var launchCounter = 0
+
+    fun startOneTap(singleDealerId: Long? = null) {
+        viewModelScope.launch { loadNextOneTap(sent = 0, skipped = emptySet(), singleId = singleDealerId) }
+    }
+
+    private suspend fun loadNextOneTap(sent: Int, skipped: Set<Long>, singleId: Long?) {
+        val c = cycle.value ?: run { oneTap.value = null; return }
+        val remaining = settings.dailyLimit - repo.usedToday()
+        val dealer = if (singleId != null) {
+            if (sent > 0) null else repo.dealers.get(singleId)?.takeIf { it.phone != null }
+        } else repo.nextForOneTap(c.id, skipped)
+        if (dealer == null) {
+            finishOneTap(sent, if (singleId == null) "All queued reminders are done." else null)
+            return
+        }
+        val msg = repo.buildMessage(dealer)
+        if (remaining <= 0 || msg.info.segments > remaining) {
+            finishOneTap(sent, "Today's limit of ${settings.dailyLimit} is reached – the rest continue tomorrow.")
+            return
+        }
+        oneTap.value = OneTapSession(
+            dealer = dealer, text = msg.text, segments = msg.info.segments, phase = OneTapSession.Phase.OPEN_SMS,
+            sent = sent, singleId = singleId, skipped = skipped, launchId = ++launchCounter,
+        )
+    }
+
+    private fun finishOneTap(sent: Int, reason: String?) {
+        oneTap.value = null
+        message.value = listOfNotNull("$sent sent.", reason).joinToString(" ")
+    }
+
+    /** Returned to the app after the Messages app was opened. */
+    fun oneTapReturned() {
+        val s = oneTap.value ?: return
+        if (s.phase == OneTapSession.Phase.OPEN_SMS) oneTap.value = s.copy(phase = OneTapSession.Phase.CONFIRM)
+    }
+
+    /** The user sent the SMS. [next] = continue with the next dealer. */
+    fun oneTapSent(next: Boolean) {
+        val s = oneTap.value ?: return
+        oneTap.value = null
+        viewModelScope.launch {
+            repo.markSentByUser(s.dealer.id, s.text, s.segments)
+            if (next && s.singleId == null) loadNextOneTap(s.sent + 1, s.skipped, null) else finishOneTap(s.sent + 1, null)
+        }
+    }
+
+    fun oneTapNotSent() {
+        val s = oneTap.value ?: return
+        oneTap.value = s.copy(phase = OneTapSession.Phase.NOT_SENT)
+    }
+
+    fun oneTapOpenAgain() {
+        val s = oneTap.value ?: return
+        oneTap.value = s.copy(phase = OneTapSession.Phase.OPEN_SMS, launchId = ++launchCounter)
+    }
+
+    fun oneTapSkip() {
+        val s = oneTap.value ?: return
+        viewModelScope.launch { loadNextOneTap(s.sent, s.skipped + s.dealer.id, s.singleId) }
+    }
+
+    fun oneTapStop() {
+        val s = oneTap.value ?: return
+        finishOneTap(s.sent, "Stopped – the rest stay queued.")
+    }
+
+    fun oneTapCannotOpen() {
+        oneTap.value = null
+        message.value = "No SMS app found on this phone to open."
     }
 
     fun retryFailed() {
