@@ -35,6 +35,7 @@ class MainActivity : ComponentActivity() {
                     is Screen.Detail -> DealerScreen(vm, s.dealerId)
                     Screen.Settings -> SettingsScreen(vm)
                 }
+                OneTapHost(vm)
             }
         }
     }

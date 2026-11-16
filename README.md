@@ -21,6 +21,17 @@ SMS limit (default 100) and carries the rest over to the next day automatically.
 - **Dealer page**: shows the message and history, with buttons to send or resend, call, mark as filed or edit the mobile number.
 - **Export** a CSV status report.
 
+## Two editions, one codebase
+| | Personal (GitHub) | Play Store |
+|---|---|---|
+| One-tap sending (Messages opens with the text ready, you tap Send) | ✅ | ✅ |
+| Automatic sending from the SIM + daily auto-run | ✅ (choose in Settings → Sending mode) | ❌ switched off, no SMS permission |
+| In-app updates | ✅ from GitHub releases | via Play Store |
+| Output | `GST-Reminder.apk` (release) | `GST-Reminder-play.aab` (build artifact) |
+
+Everything lives on `main`. The Gradle flavors `personal` and `play` decide which permissions are in the
+manifest (`app/src/personal/AndroidManifest.xml`) and set the `AUTO_SMS` / `SELF_UPDATE` flags.
+
 ## Install
 1. On the phone, open **https://github.com/Rohitgupta008/sms-broadcaster/releases/latest/download/GST-Reminder.apk**
    (sign in to GitHub in the browser first if the repo is private).

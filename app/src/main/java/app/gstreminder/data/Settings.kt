@@ -2,6 +2,7 @@ package app.gstreminder.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import app.gstreminder.BuildConfig
 import app.gstreminder.core.MessageBuilder
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -9,6 +10,14 @@ import kotlinx.coroutines.flow.callbackFlow
 
 class Settings(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+    /** Stored choice; see [sendMode] for what actually applies. */
+    var sendModeChoice: SendMode
+        get() = runCatching { SendMode.valueOf(prefs.getString("sendMode", null) ?: "") }.getOrDefault(SendMode.AUTO)
+        set(v) = prefs.edit().putString("sendMode", v.name).apply()
+
+    /** The Play edition has no SMS permission, so it is always one-tap. */
+    val sendMode: SendMode get() = if (BuildConfig.AUTO_SMS) sendModeChoice else SendMode.ONE_TAP
 
     var dailyLimit: Int
         get() = prefs.getInt("dailyLimit", 100)
@@ -65,4 +74,11 @@ class Settings(context: Context) {
         prefs.registerOnSharedPreferenceChangeListener(listener)
         awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
+}
+
+enum class SendMode(val label: String) {
+    /** The app sends each SMS itself from the SIM (personal edition only). */
+    AUTO("Automatic"),
+    /** The app opens the Messages app with the text ready; you tap Send. */
+    ONE_TAP("One-tap"),
 }

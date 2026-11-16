@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.gstreminder.data.Repository
+import app.gstreminder.data.SendMode
 import app.gstreminder.data.Settings
 import app.gstreminder.data.SmsStatus
 import app.gstreminder.repo
@@ -194,7 +195,7 @@ object Scheduler {
     /** Runs a batch every day at the configured time. [replace] = settings changed. */
     fun scheduleDaily(context: Context, settings: Settings, replace: Boolean) {
         val wm = WorkManager.getInstance(context)
-        if (!settings.autoSend) {
+        if (!settings.autoSend || settings.sendMode != SendMode.AUTO) {
             wm.cancelUniqueWork(SendWorker.WORK_DAILY)
             return
         }
@@ -214,6 +215,7 @@ object Scheduler {
     }
 
     fun nextAutoRunText(settings: Settings): String {
+        if (settings.sendMode != SendMode.AUTO) return "One-tap mode: tap Start sending each day"
         if (!settings.autoSend) return "Auto-send is off"
         val now = LocalDateTime.now()
         val at = LocalTime.of(settings.sendAtMinutes / 60, settings.sendAtMinutes % 60)

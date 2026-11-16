@@ -42,6 +42,26 @@ android {
         }
     }
 
+    // Two editions from the same code:
+    //  - personal: sideloaded from GitHub; can send SMS automatically from the SIM and self-update.
+    //  - play:     Google Play; no SMS / install permissions at all. The automatic-sending code is
+    //              still compiled in but switched off (and Android blocks it without the permission).
+    flavorDimensions += "edition"
+    productFlavors {
+        create("personal") {
+            dimension = "edition"
+            buildConfigField("boolean", "AUTO_SMS", "true")
+            buildConfigField("boolean", "SELF_UPDATE", "true")
+        }
+        create("play") {
+            dimension = "edition"
+            // Permanent once uploaded to Play – confirm before the first upload.
+            applicationId = "app.gstreminder.play"
+            buildConfigField("boolean", "AUTO_SMS", "false")
+            buildConfigField("boolean", "SELF_UPDATE", "false")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

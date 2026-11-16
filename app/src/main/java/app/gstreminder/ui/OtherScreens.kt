@@ -51,7 +51,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gstreminder.BuildConfig
 import app.gstreminder.core.MessageBuilder
+import app.gstreminder.data.SendMode
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.RadioButton
 import app.gstreminder.core.Pending
 import app.gstreminder.data.Repository
 import app.gstreminder.data.SmsStatus
@@ -202,7 +206,11 @@ fun DealerScreen(vm: MainViewModel, id: Long) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (d.phone != null && !d.filed && d.status != SmsStatus.SENDING) {
                 Button(onClick = {
-                    if (SmsSender.hasPermission(ctx)) vm.sendOne(d.id) else smsPermission.launch(Manifest.permission.SEND_SMS)
+                    when {
+                        vm.settings.sendMode == SendMode.ONE_TAP -> vm.startOneTap(d.id)
+                        SmsSender.hasPermission(ctx) -> vm.sendOne(d.id)
+                        else -> smsPermission.launch(Manifest.permission.SEND_SMS)
+                    }
                 }, modifier = Modifier.weight(1f)) {
                     Text(if (d.status in setOf(SmsStatus.SENT, SmsStatus.DELIVERED, SmsStatus.FAILED)) "Resend now" else "Send now")
                 }
@@ -252,6 +260,7 @@ fun SettingsScreen(vm: MainViewModel) {
     var sender by remember { mutableStateOf(s.sender) }
     var template by remember { mutableStateOf(s.template) }
     var autoSend by remember { mutableStateOf(s.autoSend) }
+    var mode by remember { mutableStateOf(s.sendMode) }
     var sendAt by remember { mutableStateOf("%02d:%02d".format(s.sendAtMinutes / 60, s.sendAtMinutes % 60)) }
     var hours by remember { mutableStateOf("${s.startHour}-${s.endHour}") }
     var gap by remember { mutableStateOf(s.gapSeconds.toString()) }
@@ -288,7 +297,29 @@ fun SettingsScreen(vm: MainViewModel) {
             )
             TextButton(onClick = { template = MessageBuilder.DEFAULT_TEMPLATE; sender = MessageBuilder.DEFAULT_SENDER }) { Text("Reset to default") }
         }
-        Section("Automatic daily sending") {
+        if (BuildConfig.AUTO_SMS) {
+            Section("Sending mode") {
+                SendMode.entries.forEach { m ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { mode = m },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mode == m, onClick = { mode = m })
+                        Column {
+                            Text(m.label)
+                            Text(
+                                when (m) {
+                                    SendMode.AUTO -> "The app sends each SMS itself, in the background and daily at a set time."
+                                    SendMode.ONE_TAP -> "The app opens Messages with the text ready; you tap Send for each dealer."
+                                },
+                                style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (mode == SendMode.AUTO) Section("Automatic daily sending") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Send queued reminders every day", Modifier.weight(1f))
                 Switch(checked = autoSend, onCheckedChange = { autoSend = it })
@@ -300,7 +331,7 @@ fun SettingsScreen(vm: MainViewModel) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
         }
-        Section("SIM card") {
+        if (mode == SendMode.AUTO) Section("SIM card") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(sim.second, Modifier.weight(1f))
                 TextButton(onClick = {
@@ -314,7 +345,11 @@ fun SettingsScreen(vm: MainViewModel) {
                 }
             }
         }
-        Section("App version") {
+        if (!BuildConfig.SELF_UPDATE) Section("App version") {
+            Text("Version ${BuildConfig.VERSION_NAME}")
+            Text("Updates come through the Play Store.", style = MaterialTheme.typography.bodySmall, color = StatusColors.muted)
+        }
+        if (BuildConfig.SELF_UPDATE) Section("App version") {
             val update by vm.update.collectAsStateWithLifecycle()
             Text("Build ${app.gstreminder.update.Updater.currentBuild}")
             Text(
@@ -332,7 +367,10 @@ fun SettingsScreen(vm: MainViewModel) {
             TextButton(onClick = { vm.checkForUpdate() }) { Text("Check for updates") }
         }
         Section("Tip") {
-            Text(
+            if (mode == SendMode.ONE_TAP) Text(
+                "Tap Start sending: Messages opens with the reminder ready. Tap Send, then Back. The app marks it sent and opens the next dealer.",
+                style = MaterialTheme.typography.bodySmall,
+            ) else Text(
                 "Android may ask \"GST Reminder is sending a large number of SMS messages\". Tick \"Remember my choice\" and tap Allow, otherwise sending stops after ~30 messages.",
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -352,12 +390,13 @@ fun SettingsScreen(vm: MainViewModel) {
                 gapSeconds = gap.toIntOrNull() ?: 4
                 subscriptionId = sim.first
                 subscriptionLabel = sim.second
+                sendModeChoice = mode
             }
             usedToday.toIntOrNull()?.let { if (it != quota.used) vm.setUsedToday(it) }
             vm.back()
         }, modifier = Modifier.fillMaxWidth()) { Text("Save") }
         Text(
-            "Status meaning: Sent = left your phone · Delivered = operator confirmed delivery · Failed = not sent after ${Repository.MAX_ATTEMPTS} tries.",
+            "Status meaning: Sent = left your phone (or you sent it in one-tap mode) · Delivered = operator confirmed delivery · Failed = not sent after ${Repository.MAX_ATTEMPTS} tries.",
             style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
         )
     }

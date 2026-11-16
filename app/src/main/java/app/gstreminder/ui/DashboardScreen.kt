@@ -64,6 +64,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.gstreminder.core.Pending
 import app.gstreminder.data.Dealer
 import app.gstreminder.data.Repository
+import app.gstreminder.data.SendMode
 import app.gstreminder.data.SmsStatus
 import app.gstreminder.sms.SmsSender
 import app.gstreminder.work.Scheduler
@@ -103,7 +104,11 @@ fun DashboardScreen(vm: MainViewModel) {
         if (granted) vm.sendNow() else vm.message.value = "SMS permission is needed to send reminders."
     }
     fun onSend() {
-        if (SmsSender.hasPermission(ctx)) vm.sendNow() else smsPermission.launch(Manifest.permission.SEND_SMS)
+        when {
+            vm.settings.sendMode == SendMode.ONE_TAP -> vm.startOneTap()
+            SmsSender.hasPermission(ctx) -> vm.sendNow()
+            else -> smsPermission.launch(Manifest.permission.SEND_SMS)
+        }
     }
     fun importFile() = pickFile.launch(arrayOf("*/*"))
 
@@ -283,6 +288,7 @@ private fun SummaryCard(
                         when {
                             s.queued == 0 -> "Nothing to send"
                             quota.remaining == 0 -> "Today's limit used – continues tomorrow"
+                            vm.settings.sendMode == SendMode.ONE_TAP -> "Start sending (${minOf(s.queued, quota.remaining)} today)"
                             else -> "Send now (${minOf(s.queued, quota.remaining)} today)"
                         }
                     )
