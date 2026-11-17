@@ -90,6 +90,9 @@ fun OneTapHost(vm: MainViewModel) {
                 )
                 Text(s.dealer.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("+91 ${s.dealer.phone}", fontFamily = FontFamily.Monospace)
+                s.simLabel?.let {
+                    Text("Send from $it", color = StatusColors.warn, fontWeight = FontWeight.Bold)
+                }
                 when (s.phase) {
                     OneTapSession.Phase.OPEN_SMS -> OpenSmsPanel(vm)
                     OneTapSession.Phase.CONFIRM -> ConfirmPanel(vm, s)

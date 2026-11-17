@@ -18,6 +18,11 @@ SMS limit (default 100) and carries the rest over to the next day automatically.
   today's usage and an estimated finish date. Filter chips and search help you find dealers.
 - **Monthly**: importing a new month starts a new list. Re-importing an updated sheet for the
   **same** month updates dealers by GSTIN, and anyone who has filed since is removed from the queue.
+- **Updated list mid-month**: re-importing the same period offers *Update statuses only* or a
+  *New reminder round* (remind everyone still not filed again). Either way, dealers still waiting from
+  before go to the **top of the queue** and those who filed are removed.
+- **Dual SIM**: optionally use both SIM cards, each with its own daily limit (Settings → SIM cards).
+  The app sends from the SIM with more SMS left; in one-tap mode it tells you which SIM to pick.
 - **Dealer page**: shows the message and history, with buttons to send or resend, call, mark as filed or edit the mobile number.
 - **Export** a CSV status report.
 
