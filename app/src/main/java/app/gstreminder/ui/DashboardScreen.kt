@@ -203,14 +203,32 @@ fun UpdateBanner(vm: MainViewModel) {
         is app.gstreminder.update.UpdateState.Error -> if (s.info != null) Triple(s.message, s.info, false) else return
         else -> return
     }
+    val ctx = LocalContext.current
+    val failed = s is app.gstreminder.update.UpdateState.Error
     Card(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-            if (busy) CircularProgressIndicator(Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
-            if (info != null) Button(onClick = { vm.installUpdate(info) }) { Text("Update") }
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                if (busy) CircularProgressIndicator(Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
+                if (info != null && !failed) Button(onClick = { vm.installUpdate(info) }) { Text("Update") }
+            }
+            if (info != null && failed) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    Button(onClick = { vm.installUpdate(info) }, modifier = Modifier.weight(1f)) { Text("Retry") }
+                    // Fallback: download in the browser and install from there.
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            ctx.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(info.apkUrl))
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }, modifier = Modifier.weight(1f)) { Text("Download") }
+                }
+            }
         }
     }
 }

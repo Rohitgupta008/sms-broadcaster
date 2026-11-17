@@ -163,7 +163,9 @@ class InstallResultReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_SUCCESS -> Updater.state.value = UpdateState.UpToDate
             else -> {
                 val reason = when (status) {
-                    PackageInstaller.STATUS_FAILURE_ABORTED -> "Update cancelled."
+                    PackageInstaller.STATUS_FAILURE_ABORTED ->
+                        "Update cancelled. If you didn't cancel it, Play Protect probably blocked it: turn off " +
+                            "\"Scan apps with Play Protect\" for a minute and tap Retry, or use Download."
                     PackageInstaller.STATUS_FAILURE_CONFLICT, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
                         "This build is signed with a different key. Uninstall the app once, then install it again from the download link."
                     PackageInstaller.STATUS_FAILURE_BLOCKED ->
