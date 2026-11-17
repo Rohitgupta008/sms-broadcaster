@@ -43,6 +43,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -191,6 +192,50 @@ fun DashboardScreen(vm: MainViewModel) {
     }
 }
 
+/** Exact steps to temporarily turn off the phone protections that block sideloaded updates. */
+@Composable
+private fun InstallBlockedHelp() {
+    val ctx = LocalContext.current
+    Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Most likely the phone's protection blocked it. Turn these off for a minute:", fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.bodySmall)
+        Text(
+            "1. Google Play Protect\n" +
+                "    Play Store → tap your profile picture (top right) → Play Protect → ⚙ (top right) → " +
+                "turn off \"Scan apps with Play Protect\".",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "2. Auto Blocker (Samsung phones)\n" +
+                "    Settings → Security and privacy → Auto Blocker → turn off.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text("3. Tap Retry below (or Download).", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "After the update, turn both back on.",
+            style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = {
+                runCatching {
+                    ctx.startActivity(
+                        ctx.packageManager.getLaunchIntentForPackage("com.android.vending")!!
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }) { Text("Open Play Store") }
+            TextButton(onClick = {
+                runCatching {
+                    ctx.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }) { Text("Open Security settings") }
+        }
+    }
+}
+
 /** Shown only when a newer build is available, downloading, or failed. */
 @Composable
 fun UpdateBanner(vm: MainViewModel) {
@@ -203,14 +248,35 @@ fun UpdateBanner(vm: MainViewModel) {
         is app.gstreminder.update.UpdateState.Error -> if (s.info != null) Triple(s.message, s.info, false) else return
         else -> return
     }
+    val ctx = LocalContext.current
+    val failed = s is app.gstreminder.update.UpdateState.Error
     Card(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-            if (busy) CircularProgressIndicator(Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
-            if (info != null) Button(onClick = { vm.installUpdate(info) }) { Text("Update") }
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                if (busy) CircularProgressIndicator(Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
+                if (info != null && !failed) Button(onClick = { vm.installUpdate(info) }) { Text("Update") }
+            }
+            if ((s as? app.gstreminder.update.UpdateState.Error)?.protectionHelp == true) {
+                InstallBlockedHelp()
+            }
+            if (info != null && failed) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    Button(onClick = { vm.installUpdate(info) }, modifier = Modifier.weight(1f)) { Text("Retry") }
+                    // Fallback: download in the browser and install from there.
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            ctx.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(info.apkUrl))
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }, modifier = Modifier.weight(1f)) { Text("Download") }
+                }
+            }
         }
     }
 }

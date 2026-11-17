@@ -27,7 +27,8 @@ sealed interface UpdateState {
     data class Available(val info: UpdateInfo) : UpdateState
     data class Downloading(val info: UpdateInfo, val percent: Int) : UpdateState
     data class Installing(val info: UpdateInfo) : UpdateState
-    data class Error(val message: String, val info: UpdateInfo? = null) : UpdateState
+    /** [protectionHelp] = the phone's security features probably blocked the install: show how to turn them off. */
+    data class Error(val message: String, val info: UpdateInfo? = null, val protectionHelp: Boolean = false) : UpdateState
 }
 
 /**
@@ -163,15 +164,17 @@ class InstallResultReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_SUCCESS -> Updater.state.value = UpdateState.UpToDate
             else -> {
                 val reason = when (status) {
-                    PackageInstaller.STATUS_FAILURE_ABORTED -> "Update cancelled."
+                    PackageInstaller.STATUS_FAILURE_ABORTED -> "Update was cancelled or blocked."
                     PackageInstaller.STATUS_FAILURE_CONFLICT, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
-                        "This build is signed with a different key. Uninstall the app once, then install it again from the download link."
-                    PackageInstaller.STATUS_FAILURE_BLOCKED ->
-                        "Blocked by the phone (Play Protect?). Turn off \"Scan apps with Play Protect\" for a minute and try again."
-                    PackageInstaller.STATUS_FAILURE_STORAGE -> "Not enough storage."
+                        "This build is signed with a different key. Uninstall the app once, then install it again with Download."
+                    PackageInstaller.STATUS_FAILURE_BLOCKED -> "Update was blocked by the phone."
+                    PackageInstaller.STATUS_FAILURE_STORAGE -> "Not enough storage. Free some space and tap Retry."
                     else -> intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Install failed (code $status)."
                 }
-                Updater.state.value = UpdateState.Error(reason, info)
+                // Play Protect / Samsung Auto Blocker show up as "aborted" or "blocked" (sometimes a generic failure).
+                val protectionHelp = status == PackageInstaller.STATUS_FAILURE_ABORTED ||
+                    status == PackageInstaller.STATUS_FAILURE_BLOCKED || status == PackageInstaller.STATUS_FAILURE
+                Updater.state.value = UpdateState.Error(reason, info, protectionHelp)
             }
         }
     }
