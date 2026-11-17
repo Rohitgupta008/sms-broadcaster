@@ -1,6 +1,7 @@
 package app.gstreminder.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -11,6 +12,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import app.gstreminder.core.Pending
 import kotlinx.coroutines.flow.Flow
 
@@ -65,13 +68,20 @@ data class Dealer(
     val sentAt: Long? = null,
     val deliveredAt: Long? = null,
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Was still waiting when an updated list was imported: goes to the top of the queue. */
+    @ColumnInfo(defaultValue = "0") val carryOver: Boolean = false,
+    /** How many reminders have been sent to this dealer in this cycle. */
+    @ColumnInfo(defaultValue = "0") val reminders: Int = 0,
+    /** SIM slot (0 = SIM 1, 1 = SIM 2) the last SMS was counted against. */
+    @ColumnInfo(defaultValue = "0") val simSlot: Int = 0,
 ) {
     val pendingEnum: Pending get() = runCatching { Pending.valueOf(pending) }.getOrDefault(Pending.GST_RETURN)
     val filed: Boolean get() = pendingEnum == Pending.NONE
 }
 
-@Entity(tableName = "daily_usage")
-data class DailyUsage(@PrimaryKey val date: String, val used: Int)
+/** SMS parts sent per day per SIM slot (operators count the limit per SIM). */
+@Entity(tableName = "sim_usage", primaryKeys = ["date", "slot"])
+data class SimUsage(val date: String, val slot: Int, val used: Int)
 
 data class Stats(
     val total: Int = 0,
@@ -128,7 +138,7 @@ interface DealerDao {
 
     @Query(
         "SELECT * FROM dealer WHERE cycleId = :cycleId AND status = 'QUEUED' " +
-            "ORDER BY attempts, priority, rowNum LIMIT 1"
+            "ORDER BY carryOver DESC, attempts, priority, rowNum LIMIT 1"
     )
     suspend fun nextQueued(cycleId: Long): Dealer?
 
@@ -161,26 +171,29 @@ interface DealerDao {
 
 @Dao
 abstract class UsageDao {
-    @Query("SELECT used FROM daily_usage WHERE date = :date")
-    abstract fun usedFlow(date: String): Flow<Int?>
+    @Query("SELECT * FROM sim_usage WHERE date = :date")
+    abstract fun forDateFlow(date: String): Flow<List<SimUsage>>
 
-    @Query("SELECT used FROM daily_usage WHERE date = :date")
-    abstract suspend fun used(date: String): Int?
+    @Query("SELECT used FROM sim_usage WHERE date = :date AND slot = :slot")
+    abstract suspend fun used(date: String, slot: Int): Int?
 
-    @Query("INSERT OR IGNORE INTO daily_usage(date, used) VALUES(:date, 0)")
-    protected abstract suspend fun ensure(date: String)
+    @Query("SELECT COALESCE(SUM(used), 0) FROM sim_usage WHERE date = :date")
+    abstract suspend fun total(date: String): Int
 
-    @Query("UPDATE daily_usage SET used = MAX(0, used + :delta) WHERE date = :date")
-    protected abstract suspend fun addRaw(date: String, delta: Int)
+    @Query("INSERT OR IGNORE INTO sim_usage(date, slot, used) VALUES(:date, :slot, 0)")
+    protected abstract suspend fun ensure(date: String, slot: Int)
 
-    @Query("UPDATE daily_usage SET used = MAX(0, :used) WHERE date = :date")
-    protected abstract suspend fun setRaw(date: String, used: Int)
+    @Query("UPDATE sim_usage SET used = MAX(0, used + :delta) WHERE date = :date AND slot = :slot")
+    protected abstract suspend fun addRaw(date: String, slot: Int, delta: Int)
 
-    open suspend fun add(date: String, delta: Int) { ensure(date); addRaw(date, delta) }
-    open suspend fun set(date: String, used: Int) { ensure(date); setRaw(date, used) }
+    @Query("UPDATE sim_usage SET used = MAX(0, :used) WHERE date = :date AND slot = :slot")
+    protected abstract suspend fun setRaw(date: String, slot: Int, used: Int)
+
+    open suspend fun add(date: String, slot: Int, delta: Int) { ensure(date, slot); addRaw(date, slot, delta) }
+    open suspend fun set(date: String, slot: Int, used: Int) { ensure(date, slot); setRaw(date, slot, used) }
 }
 
-@Database(entities = [Cycle::class, Dealer::class, DailyUsage::class], version = 1, exportSchema = false)
+@Database(entities = [Cycle::class, Dealer::class, SimUsage::class], version = 2, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun cycles(): CycleDao
     abstract fun dealers(): DealerDao
@@ -188,6 +201,24 @@ abstract class AppDb : RoomDatabase() {
 
     companion object {
         fun create(context: Context): AppDb =
-            Room.databaseBuilder(context, AppDb::class.java, "gst-reminder.db").build()
+            Room.databaseBuilder(context, AppDb::class.java, "gst-reminder.db")
+                .addMigrations(MIGRATION_1_2)
+                .build()
+
+        /** v2: carry-over / reminder count / SIM slot on dealers, and usage counted per SIM. */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE dealer ADD COLUMN carryOver INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE dealer ADD COLUMN reminders INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE dealer ADD COLUMN simSlot INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE dealer SET reminders = 1 WHERE status IN ('SENT', 'DELIVERED')")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sim_usage` (`date` TEXT NOT NULL, `slot` INTEGER NOT NULL, " +
+                        "`used` INTEGER NOT NULL, PRIMARY KEY(`date`, `slot`))"
+                )
+                db.execSQL("INSERT OR REPLACE INTO sim_usage(date, slot, used) SELECT date, 0, used FROM daily_usage")
+                db.execSQL("DROP TABLE IF EXISTS daily_usage")
+            }
+        }
     }
 }

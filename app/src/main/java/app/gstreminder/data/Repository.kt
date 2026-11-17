@@ -20,22 +20,73 @@ class Repository(private val db: AppDb, val settings: Settings) {
 
     fun today(): String = LocalDate.now().toString()
 
-    suspend fun usedToday(): Int = usage.used(today()) ?: 0
+    // ---------------------------------------------------------------- daily limits (per SIM)
+
+    suspend fun usedToday(): Int = usage.total(today())
+
+    suspend fun usedOn(slot: Int): Int = usage.used(today(), slot) ?: 0
+
+    /**
+     * The SIM slot to count the next SMS against: the one with the most quota left that can still
+     * take [segments] SMS parts today, or null when every SIM has reached its limit.
+     */
+    suspend fun pickSlot(segments: Int): Int? =
+        settings.slots
+            .map { it to settings.limitFor(it) - usedOn(it) }
+            .filter { (_, left) -> left >= segments }
+            .maxByOrNull { (_, left) -> left }
+            ?.first
 
     // ---------------------------------------------------------------- import
 
-    data class ImportResult(val cycleId: Long, val updated: Boolean, val newlyQueued: Int, val cancelled: Int)
+    data class ImportResult(
+        val cycleId: Long,
+        val updated: Boolean,
+        /** Were waiting before and still not filed: now at the top of the queue. */
+        val carriedOver: Int,
+        /** Already reminded but still not filed: queued for another reminder (new round only). */
+        val reQueued: Int,
+        val newlyQueued: Int,
+        /** Removed from the queue because they filed (or left the list). */
+        val cancelled: Int,
+    )
+
+    /** What re-importing [parsed] into the active cycle would do. Null if it starts a new cycle. */
+    data class UpdatePlan(val pending: Int, val reminded: Int, val newOnes: Int, val removed: Int)
+
+    private fun stillDue(p: ParsedDealer?) = p != null && p.pending != Pending.NONE && p.phone != null
+
+    private val messagedStatuses = setOf(SmsStatus.SENT, SmsStatus.DELIVERED, SmsStatus.FAILED)
+
+    suspend fun planUpdate(parsed: ParsedImport): UpdatePlan? {
+        val active = cycles.active() ?: return null
+        val existing = dealers.forCycle(active.id).associateBy { it.gstin }
+        val incoming = parsed.dealers.associateBy { it.gstin }
+        return UpdatePlan(
+            pending = existing.values.count { it.status == SmsStatus.QUEUED && stillDue(incoming[it.gstin]) },
+            reminded = existing.values.count { it.status in messagedStatuses && stillDue(incoming[it.gstin]) },
+            newOnes = parsed.dealers.count { p ->
+                stillDue(p) && existing[p.gstin].let { it == null || it.status == SmsStatus.NOT_NEEDED || it.status == SmsStatus.NO_MOBILE }
+            },
+            removed = existing.values.count { it.status == SmsStatus.QUEUED && !stillDue(incoming[it.gstin]) },
+        )
+    }
 
     /**
-     * Same period as the active cycle -> update it in place (matched by GSTIN), so dealers who
-     * filed since the last import are not reminded. Different period -> start a new cycle.
+     * Same period as the active cycle -> update it in place (matched by GSTIN):
+     *  - dealers who filed since are removed from the queue,
+     *  - dealers still waiting from before are marked "carried over" and go to the top,
+     *  - with [newRound], dealers already reminded who still have not filed are queued again.
+     * Different period -> start a new cycle.
      */
-    suspend fun import(parsed: ParsedImport, period: String, fileName: String): ImportResult = db.withTransaction {
+    suspend fun import(parsed: ParsedImport, period: String, fileName: String, newRound: Boolean): ImportResult = db.withTransaction {
         val now = System.currentTimeMillis()
         val active = cycles.active()
         if (active != null && active.period.equals(period, ignoreCase = true)) {
             val existing = dealers.forCycle(active.id).associateBy { it.gstin }
             val incoming = parsed.dealers.associateBy { it.gstin }
+            var carried = 0
+            var reQueued = 0
             var queued = 0
             var cancelled = 0
             val updates = ArrayList<Dealer>()
@@ -44,10 +95,14 @@ class Repository(private val db: AppDb, val settings: Settings) {
                 val merged = if (p == null) {
                     // Dropped from the non-filer list: don't remind any more.
                     if (d.status == SmsStatus.QUEUED || d.status == SmsStatus.NO_MOBILE) {
-                        d.copy(status = SmsStatus.NOT_NEEDED, lastError = "Not in latest sheet", updatedAt = now)
+                        d.copy(status = SmsStatus.NOT_NEEDED, carryOver = false, lastError = "Not in latest sheet", updatedAt = now)
                     } else d
-                } else merge(d, p, now)
-                if (merged.status == SmsStatus.QUEUED && d.status != SmsStatus.QUEUED) queued++
+                } else merge(d, p, now, newRound)
+                if (merged.status == SmsStatus.QUEUED) when {
+                    d.status == SmsStatus.QUEUED -> carried++
+                    d.status in messagedStatuses -> reQueued++
+                    else -> queued++
+                }
                 if (d.status == SmsStatus.QUEUED && merged.status != SmsStatus.QUEUED) cancelled++
                 if (merged != d) updates += merged
             }
@@ -56,13 +111,13 @@ class Repository(private val db: AppDb, val settings: Settings) {
             dealers.insertAll(added)
             queued += added.count { it.status == SmsStatus.QUEUED }
             cycles.update(active.copy(fileName = fileName, sheetName = parsed.sheetName, importedAt = now))
-            ImportResult(active.id, updated = true, newlyQueued = queued, cancelled = cancelled)
+            ImportResult(active.id, updated = true, carriedOver = carried, reQueued = reQueued, newlyQueued = queued, cancelled = cancelled)
         } else {
             cycles.deactivateAll()
             val id = cycles.insert(Cycle(period = period, fileName = fileName, sheetName = parsed.sheetName, importedAt = now))
             val list = parsed.dealers.map { newDealer(id, it, now) }
             dealers.insertAll(list)
-            ImportResult(id, updated = false, newlyQueued = list.count { it.status == SmsStatus.QUEUED }, cancelled = 0)
+            ImportResult(id, updated = false, carriedOver = 0, reQueued = 0, newlyQueued = list.count { it.status == SmsStatus.QUEUED }, cancelled = 0)
         }
     }
 
@@ -79,11 +134,14 @@ class Repository(private val db: AppDb, val settings: Settings) {
         pending = p.pending.name, priority = p.pending.priority, extras = extrasText(p), status = statusFor(p), updatedAt = now,
     )
 
-    private fun merge(d: Dealer, p: ParsedDealer, now: Long): Dealer {
+    private fun merge(d: Dealer, p: ParsedDealer, now: Long, newRound: Boolean): Dealer {
         val alreadyMessaged = d.status in setOf(SmsStatus.SENT, SmsStatus.DELIVERED, SmsStatus.SENDING)
         val phoneChanged = p.phone != d.phone
+        val due = stillDue(p)
         val status = when {
-            alreadyMessaged && !(phoneChanged && p.pending != Pending.NONE && p.phone != null) -> d.status
+            // New reminder round: everyone already messaged who still hasn't filed gets another reminder.
+            newRound && due && d.status in messagedStatuses -> SmsStatus.QUEUED
+            alreadyMessaged && !(phoneChanged && due) -> d.status
             p.pending == Pending.NONE -> SmsStatus.NOT_NEEDED
             p.phone == null -> SmsStatus.NO_MOBILE
             d.status == SmsStatus.FAILED && !phoneChanged -> SmsStatus.FAILED
@@ -94,6 +152,8 @@ class Repository(private val db: AppDb, val settings: Settings) {
             rowNum = p.row, name = p.name, phone = p.phone, rawPhone = p.rawPhone,
             pending = p.pending.name, priority = p.pending.priority, extras = extrasText(p),
             status = status,
+            // Still waiting from before -> top of the queue.
+            carryOver = status == SmsStatus.QUEUED && d.status == SmsStatus.QUEUED,
             attempts = if (resetAttempts) 0 else d.attempts,
             lastError = if (status == d.status) d.lastError else null,
             updatedAt = if (status != d.status || phoneChanged) now else d.updatedAt,
@@ -151,19 +211,20 @@ class Repository(private val db: AppDb, val settings: Settings) {
     suspend fun nextForOneTap(cycleId: Long, skip: Set<Long>): Dealer? =
         dealers.forCycle(cycleId)
             .filter { it.status == SmsStatus.QUEUED && it.phone != null && it.id !in skip }
-            .minWithOrNull(compareBy<Dealer>({ it.attempts }, { it.priority }, { it.rowNum }))
+            .minWithOrNull(compareBy<Dealer>({ !it.carryOver }, { it.attempts }, { it.priority }, { it.rowNum }))
 
     /** The user sent this SMS themselves from the Messages app. Counts towards today's limit. */
-    suspend fun markSentByUser(id: Long, text: String, segments: Int) {
+    suspend fun markSentByUser(id: Long, text: String, segments: Int, slot: Int) {
         val d = dealers.get(id) ?: return
         val now = System.currentTimeMillis()
         dealers.update(
             d.copy(
                 status = SmsStatus.SENT, message = text, segments = segments, attempts = d.attempts + 1,
                 lastError = null, sentAt = now, deliveredAt = null, updatedAt = now,
+                carryOver = false, reminders = d.reminders + 1, simSlot = slot,
             )
         )
-        usage.add(today(), segments)
+        usage.add(today(), slot, segments)
     }
 
     // ---------------------------------------------------------------- send results
@@ -174,13 +235,15 @@ class Repository(private val db: AppDb, val settings: Settings) {
         if (d.status != SmsStatus.SENDING) return
         val now = System.currentTimeMillis()
         if (resultCode == Activity.RESULT_OK) {
-            if (part == parts - 1) dealers.update(d.copy(status = SmsStatus.SENT, sentAt = now, lastError = null, updatedAt = now))
+            if (part == parts - 1) dealers.update(
+                d.copy(status = SmsStatus.SENT, sentAt = now, lastError = null, updatedAt = now, carryOver = false, reminders = d.reminders + 1)
+            )
             return
         }
         val error = errorText(resultCode)
         if (resultCode in NOT_SENT_CODES) {
             // The SMS never left the phone: give back the quota and keep it queued.
-            usage.add(today(), -d.segments)
+            usage.add(today(), d.simSlot, -d.segments)
             dealers.update(d.copy(status = SmsStatus.QUEUED, attempts = (d.attempts - 1).coerceAtLeast(0), lastError = error, updatedAt = now))
         } else {
             val status = if (d.attempts >= MAX_ATTEMPTS) SmsStatus.FAILED else SmsStatus.QUEUED
@@ -215,13 +278,13 @@ class Repository(private val db: AppDb, val settings: Settings) {
         fun t(ms: Long?) = ms?.let { fmt.format(Date(it)) } ?: ""
         out.bufferedWriter().use { w ->
             w.write("﻿") // Excel-friendly UTF-8
-            w.write("Period,Row,GSTIN,Trade Name,Mobile,Filing Status,SMS Status,Sent At,Delivered At,Attempts,Error,Message\n")
+            w.write("Period,Row,GSTIN,Trade Name,Mobile,Filing Status,SMS Status,Reminders,SIM,Sent At,Delivered At,Attempts,Error,Message\n")
             for (d in dealers.forCycle(cycleId)) {
                 val filing = if (d.filed) "Filed" else "Not filed (${d.pendingEnum.label})"
                 w.write(
                     listOf(
                         q(cycle?.period), d.rowNum.toString(), q(d.gstin), q(d.name), q(d.phone ?: d.rawPhone), q(filing),
-                        q(statusLabel(d.status)), q(t(d.sentAt)), q(t(d.deliveredAt)), d.attempts.toString(), q(d.lastError), q(d.message),
+                        q(statusLabel(d.status)), d.reminders.toString(), if (d.sentAt != null) "SIM ${d.simSlot + 1}" else "", q(t(d.sentAt)), q(t(d.deliveredAt)), d.attempts.toString(), q(d.lastError), q(d.message),
                     ).joinToString(",") + "\n"
                 )
             }

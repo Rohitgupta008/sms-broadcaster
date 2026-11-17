@@ -60,6 +60,12 @@ class SendWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             return Result.success()
         }
         val cycle = repo.cycles.active() ?: return Result.success()
+        val needsSimLookup = settings.dualSim || settings.simSlot >= 0
+        if (needsSimLookup && !SmsSender.hasPhonePermission(ctx)) {
+            settings.lastRun = "$label $time: phone permission needed to choose the SIM card. Open the app and tap Send."
+            return Result.success()
+        }
+        val limitText = if (settings.dualSim) "daily limits of both SIMs reached" else "daily limit of ${settings.dailyLimit} reached"
 
         val startedAt = System.currentTimeMillis()
         var sent = 0
@@ -68,9 +74,6 @@ class SendWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         var stopReason: String? = null
 
         while (true) {
-            val remaining = settings.dailyLimit - repo.usedToday()
-            if (remaining <= 0) { stopReason = "daily limit of ${settings.dailyLimit} reached"; break }
-
             val dealer = if (onlyId >= 0) {
                 if (sent + failed > 0) break
                 repo.dealers.get(onlyId)?.takeIf { it.phone != null && it.status != SmsStatus.SENDING }
@@ -78,22 +81,26 @@ class SendWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             if (dealer == null || dealer.phone == null) break
 
             val msg = repo.buildMessage(dealer)
-            if (msg.info.segments > remaining) { stopReason = "daily limit of ${settings.dailyLimit} reached"; break }
+            val slot = repo.pickSlot(msg.info.segments)
+            if (slot == null) { stopReason = limitText; break }
+            val subscriptionId = SmsSender.subscriptionForSlot(ctx, settings.sendSlot(slot))
+            if (subscriptionId == null) { stopReason = "SIM ${slot + 1} not found. If you only have one SIM, set SIM ${slot + 1} limit to 0 in Settings."; break }
 
             val now = System.currentTimeMillis()
             repo.dealers.update(
                 dealer.copy(
                     status = SmsStatus.SENDING, message = msg.text, segments = msg.info.segments,
                     attempts = dealer.attempts + 1, lastError = null, sentAt = now, deliveredAt = null, updatedAt = now,
+                    simSlot = slot,
                 )
             )
-            repo.usage.add(repo.today(), msg.info.segments)
+            repo.usage.add(repo.today(), slot, msg.info.segments)
             setProgress(workDataOf(KEY_SENT to sent, KEY_CURRENT to dealer.name))
 
             try {
-                SmsSender.send(ctx, dealer.id, dealer.phone, msg.text, settings.subscriptionId)
+                SmsSender.send(ctx, dealer.id, dealer.phone, msg.text, subscriptionId)
             } catch (e: Exception) {
-                repo.usage.add(repo.today(), -msg.info.segments)
+                repo.usage.add(repo.today(), slot, -msg.info.segments)
                 val d = repo.dealers.get(dealer.id)!!
                 repo.dealers.update(d.copy(status = SmsStatus.FAILED, lastError = "Could not send: ${e.message}"))
                 stopReason = "phone refused to send (${e.message})"

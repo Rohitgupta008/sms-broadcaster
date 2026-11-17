@@ -53,14 +53,37 @@ class Settings(context: Context) {
         get() = prefs.getInt("gapSeconds", 4)
         set(v) = prefs.edit().putInt("gapSeconds", v.coerceIn(1, 60)).apply()
 
-    /** -1 = phone's default SIM for SMS. */
-    var subscriptionId: Int
-        get() = prefs.getInt("subId", -1)
-        set(v) = prefs.edit().putInt("subId", v).apply()
+    // ------------------------------------------------------------ SIM cards & limits
+    // Operators count the daily SMS limit per SIM card. Usage is stored per SIM slot
+    // (0 = SIM 1, 1 = SIM 2).
 
-    var subscriptionLabel: String
-        get() = prefs.getString("subLabel", null) ?: "Default SIM"
-        set(v) = prefs.edit().putString("subLabel", v).apply()
+    /** Spread sending over both SIM cards, each with its own daily limit. */
+    var dualSim: Boolean
+        get() = prefs.getBoolean("dualSim", false)
+        set(v) = prefs.edit().putBoolean("dualSim", v).apply()
+
+    var sim1Limit: Int
+        get() = prefs.getInt("sim1Limit", 100)
+        set(v) = prefs.edit().putInt("sim1Limit", v.coerceAtLeast(0)).apply()
+
+    var sim2Limit: Int
+        get() = prefs.getInt("sim2Limit", 100)
+        set(v) = prefs.edit().putInt("sim2Limit", v.coerceAtLeast(0)).apply()
+
+    /** Single-SIM mode: -1 = phone's default SMS SIM, 0 = SIM 1, 1 = SIM 2. */
+    var simSlot: Int
+        get() = prefs.getInt("simSlot", -1)
+        set(v) = prefs.edit().putInt("simSlot", v.coerceIn(-1, 1)).apply()
+
+    /** SIM slots that can send today. */
+    val slots: List<Int> get() = if (dualSim) listOf(0, 1).filter { limitFor(it) > 0 } else listOf(simSlot.coerceAtLeast(0))
+
+    fun limitFor(slot: Int): Int = if (dualSim) (if (slot == 0) sim1Limit else sim2Limit) else dailyLimit
+
+    val totalLimit: Int get() = slots.sumOf { limitFor(it) }
+
+    /** Which physical SIM to send from for a usage slot (-1 = default SMS SIM). */
+    fun sendSlot(slot: Int): Int = if (dualSim) slot else simSlot
 
     /** Human readable result of the last batch, shown on the dashboard. */
     var lastRun: String

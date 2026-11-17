@@ -69,6 +69,29 @@ object SmsSender {
         }
     }
 
+    fun hasPhonePermission(context: Context) =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Subscription id of the SIM in [slot] (0 = SIM 1, 1 = SIM 2), or -1 for the phone's default SMS
+     * SIM. Needs READ_PHONE_STATE; returns null when a specific slot is asked for but can't be found.
+     */
+    fun subscriptionForSlot(context: Context, slot: Int): Int? {
+        if (slot < 0) return -1
+        if (!hasPhonePermission(context)) return null
+        val sm = context.getSystemService(SubscriptionManager::class.java) ?: return null
+        return runCatching { sm.getActiveSubscriptionInfoForSimSlotIndex(slot)?.subscriptionId }.getOrNull()
+    }
+
+    /** "SIM 1 – Jio" when the carrier is known, else "SIM 1". */
+    fun slotLabel(context: Context, slot: Int): String {
+        val base = "SIM ${slot + 1}"
+        if (!hasPhonePermission(context)) return base
+        val sm = context.getSystemService(SubscriptionManager::class.java) ?: return base
+        val carrier = runCatching { sm.getActiveSubscriptionInfoForSimSlotIndex(slot)?.carrierName?.toString() }.getOrNull()
+        return if (carrier.isNullOrBlank()) base else "$base – $carrier"
+    }
+
     /** SIM cards available for SMS, as (subscriptionId, label). Needs READ_PHONE_STATE. */
     fun simCards(context: Context): List<Pair<Int, String>> {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {

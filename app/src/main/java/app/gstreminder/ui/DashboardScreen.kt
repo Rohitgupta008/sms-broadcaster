@@ -100,14 +100,21 @@ fun DashboardScreen(vm: MainViewModel) {
     val exportFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         uri?.let { ctx.contentResolver.openOutputStream(it)?.let(vm::export) }
     }
-    val smsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) vm.sendNow() else vm.message.value = "SMS permission is needed to send reminders."
+    // Automatic sending needs SMS permission, plus phone permission when a specific SIM is used.
+    val needsSim = vm.settings.dualSim || vm.settings.simSlot >= 0
+    val sendPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result.values.all { it }) vm.sendNow()
+        else vm.message.value = "SMS" + (if (needsSim) " and phone" else "") + " permission is needed to send reminders."
     }
     fun onSend() {
+        val missing = buildList {
+            if (!SmsSender.hasPermission(ctx)) add(Manifest.permission.SEND_SMS)
+            if (needsSim && !SmsSender.hasPhonePermission(ctx)) add(Manifest.permission.READ_PHONE_STATE)
+        }
         when {
             vm.settings.sendMode == SendMode.ONE_TAP -> vm.startOneTap()
-            SmsSender.hasPermission(ctx) -> vm.sendNow()
-            else -> smsPermission.launch(Manifest.permission.SEND_SMS)
+            missing.isEmpty() -> vm.sendNow()
+            else -> sendPermissions.launch(missing.toTypedArray())
         }
     }
     fun importFile() = pickFile.launch(arrayOf("*/*"))
@@ -250,9 +257,15 @@ private fun SummaryCard(
             }
             Spacer(Modifier.height(6.dp))
             LinearProgressIndicator(
-                progress = { (quota.used.toFloat() / quota.limit).coerceIn(0f, 1f) },
+                progress = { if (quota.limit == 0) 1f else (quota.used.toFloat() / quota.limit).coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (quota.sims.size > 1) {
+                Text(
+                    quota.sims.joinToString("   ·   ") { "${it.label}: ${it.used}/${it.limit}" },
+                    style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
+                )
+            }
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Stat("Dealers", s.total)
@@ -332,6 +345,9 @@ private fun DealerRow(d: Dealer, onClick: () -> Unit) {
         Column(horizontalAlignment = Alignment.End) {
             FilingBadge(d.pendingEnum)
             SmsBadge(d.status)
+            if (d.carryOver && d.status == SmsStatus.QUEUED) {
+                Text("↑ from before", color = StatusColors.warn, style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }

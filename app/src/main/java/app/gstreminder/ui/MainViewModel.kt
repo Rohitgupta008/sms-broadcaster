@@ -15,8 +15,10 @@ import app.gstreminder.core.ParsedImport
 import app.gstreminder.core.PeriodExtractor
 import app.gstreminder.data.Cycle
 import app.gstreminder.data.Dealer
+import app.gstreminder.data.Repository
 import app.gstreminder.data.Stats
 import app.gstreminder.repo
+import app.gstreminder.sms.SmsSender
 import app.gstreminder.work.Scheduler
 import app.gstreminder.work.SendWorker
 import app.gstreminder.core.XlsxReader
@@ -55,9 +57,18 @@ data class ImportPreview(
     val parsed: ParsedImport,
     val period: String,
     val isUpdateOfActive: Boolean,
+    /** Counts for re-importing into the current list (same period). */
+    val plan: Repository.UpdatePlan? = null,
+    /** Queue everyone still not filed again (new reminder round) instead of only updating statuses. */
+    val newRound: Boolean = false,
 )
 
-data class Quota(val used: Int, val limit: Int) {
+data class SimQuota(val slot: Int, val label: String, val used: Int, val limit: Int) {
+    val remaining get() = (limit - used).coerceAtLeast(0)
+}
+
+/** Today's usage: total over the SIM cards in use, with a per-SIM breakdown. */
+data class Quota(val used: Int, val limit: Int, val sims: List<SimQuota> = emptyList()) {
     val remaining get() = (limit - used).coerceAtLeast(0)
 }
 
@@ -73,6 +84,10 @@ data class OneTapSession(
     val skipped: Set<Long>,
     /** Changes every time the Messages app should be (re)opened. */
     val launchId: Int,
+    /** SIM slot this SMS counts against. */
+    val slot: Int = 0,
+    /** "SIM 2 – Jio" when the user should pick a specific SIM in Messages; null = any. */
+    val simLabel: String? = null,
 ) {
     enum class Phase { OPEN_SMS, CONFIRM, NOT_SENT }
 }
@@ -101,8 +116,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val settingsTick: StateFlow<Int> = settings.changes.map { System.nanoTime().toInt() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
-    val quota: StateFlow<Quota> = combine(todayFlow.flatMapLatest { repo.usage.usedFlow(it) }, settingsTick) { used, _ ->
-        Quota(used ?: 0, settings.dailyLimit)
+    val quota: StateFlow<Quota> = combine(todayFlow.flatMapLatest { repo.usage.forDateFlow(it) }, settingsTick) { rows, _ ->
+        val sims = settings.slots.map { slot ->
+            SimQuota(
+                slot, SmsSender.slotLabel(getApplication<Application>(), slot),
+                rows.firstOrNull { it.slot == slot }?.used ?: 0, settings.limitFor(slot),
+            )
+        }
+        Quota(sims.sumOf { it.used }, sims.sumOf { it.limit }, sims)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, Quota(0, settings.dailyLimit))
 
     /** True while a batch is being sent; with the number sent so far in this run. */
@@ -171,7 +192,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val period = (parsed.period ?: YearMonth.now().minusMonths(1)).let { PeriodExtractor.format(it) }
                 val active = cycle.value
-                importPreview.value = ImportPreview(name, parsed, period, active != null && active.period.equals(period, true))
+                val isUpdate = active != null && active.period.equals(period, true)
+                importPreview.value = ImportPreview(
+                    name, parsed, period, isUpdate,
+                    plan = withContext(Dispatchers.IO) { repo.planUpdate(parsed) },
+                )
                 screen.value = Screen.Import
             } catch (e: ImportException) {
                 message.value = e.message
@@ -189,13 +214,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         importPreview.value = p.copy(period = text, isUpdateOfActive = active != null && active.period.equals(text.trim(), true))
     }
 
+    fun setNewRound(newRound: Boolean) {
+        importPreview.value = importPreview.value?.copy(newRound = newRound)
+    }
+
     fun confirmImport() {
         val p = importPreview.value ?: return
         val period = PeriodExtractor.parse(p.period)?.let { PeriodExtractor.format(it) } ?: p.period.trim()
         viewModelScope.launch {
-            val r = withContext(Dispatchers.IO) { repo.import(p.parsed, period, p.fileName) }
+            val r = withContext(Dispatchers.IO) { repo.import(p.parsed, period, p.fileName, p.isUpdateOfActive && p.newRound) }
             message.value = if (r.updated) {
-                "Updated $period: ${r.newlyQueued} newly queued, ${r.cancelled} removed from queue (filed)."
+                listOfNotNull(
+                    "Updated $period:",
+                    "${r.carriedOver} still pending (sent first)",
+                    r.reQueued.takeIf { it > 0 }?.let { "$it queued for another reminder" },
+                    "${r.newlyQueued} new",
+                    "${r.cancelled} removed (filed).",
+                ).joinToString(", ").replace(":,", ":")
             } else {
                 "Imported $period: ${r.newlyQueued} reminders queued."
             }
@@ -248,7 +283,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadNextOneTap(sent: Int, skipped: Set<Long>, singleId: Long?) {
         val c = cycle.value ?: run { oneTap.value = null; return }
-        val remaining = settings.dailyLimit - repo.usedToday()
         val dealer = if (singleId != null) {
             if (sent > 0) null else repo.dealers.get(singleId)?.takeIf { it.phone != null }
         } else repo.nextForOneTap(c.id, skipped)
@@ -257,12 +291,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val msg = repo.buildMessage(dealer)
-        if (remaining <= 0 || msg.info.segments > remaining) {
-            finishOneTap(sent, "Today's limit of ${settings.dailyLimit} is reached – the rest continue tomorrow.")
+        val slot = repo.pickSlot(msg.info.segments)
+        if (slot == null) {
+            finishOneTap(sent, "Today's limit of ${settings.totalLimit} is reached – the rest continue tomorrow.")
             return
         }
         oneTap.value = OneTapSession(
             dealer = dealer, text = msg.text, segments = msg.info.segments, phase = OneTapSession.Phase.OPEN_SMS,
+            slot = slot, simLabel = if (settings.dualSim || settings.simSlot >= 0) SmsSender.slotLabel(getApplication<Application>(), settings.sendSlot(slot)) else null,
             sent = sent, singleId = singleId, skipped = skipped, launchId = ++launchCounter,
         )
     }
@@ -283,7 +319,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = oneTap.value ?: return
         oneTap.value = null
         viewModelScope.launch {
-            repo.markSentByUser(s.dealer.id, s.text, s.segments)
+            repo.markSentByUser(s.dealer.id, s.text, s.segments, s.slot)
             if (next && s.singleId == null) loadNextOneTap(s.sent + 1, s.skipped, null) else finishOneTap(s.sent + 1, null)
         }
     }
@@ -352,5 +388,5 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         message.value = "Settings saved."
     }
 
-    fun setUsedToday(used: Int) = viewModelScope.launch { repo.usage.set(repo.today(), used) }
+    fun setUsedToday(slot: Int, used: Int) = viewModelScope.launch { repo.usage.set(repo.today(), slot, used) }
 }

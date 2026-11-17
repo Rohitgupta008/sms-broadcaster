@@ -98,6 +98,25 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
+private fun ChoiceRow(selected: Boolean, onClick: () -> Unit, title: String, detail: String) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column {
+            Text(title)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = StatusColors.muted)
+        }
+    }
+}
+
+@Composable
+private fun NumberField(value: String, onChange: (String) -> Unit, label: String, modifier: Modifier) {
+    OutlinedTextField(
+        value = value, onValueChange = { onChange(it.filter(Char::isDigit)) }, label = { Text(label) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = modifier,
+    )
+}
+
+@Composable
 private fun KeyValue(key: String, value: String) {
     Row {
         Text(key, Modifier.width(110.dp), color = StatusColors.muted)
@@ -121,7 +140,7 @@ fun ImportScreen(vm: MainViewModel) {
         Section("Return period (used in SMS)") {
             OutlinedTextField(
                 value = p.period, onValueChange = vm::setImportPeriod, singleLine = true,
-                supportingText = { Text("e.g. May-2026. " + if (p.isUpdateOfActive) "Same as current list – it will be UPDATED (already-sent SMS kept)." else "A NEW monthly list will be started.") },
+                supportingText = { Text("e.g. May-2026. " + if (p.isUpdateOfActive) "Same as the current list – it will be UPDATED (see options below)." else "A NEW monthly list will be started.") },
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -131,8 +150,31 @@ fun ImportScreen(vm: MainViewModel) {
             KeyValue("Not filed", "${parsed.notFiled}")
             KeyValue("SMS to send", "${parsed.toRemind}")
             KeyValue("No mobile", "${parsed.notFiledNoMobile}")
-            val days = (parsed.toRemind + vm.settings.dailyLimit - 1) / vm.settings.dailyLimit
-            if (parsed.toRemind > 0) Text("Takes about $days day(s) at ${vm.settings.dailyLimit} SMS/day.", color = StatusColors.muted)
+            val perDay = vm.settings.totalLimit.coerceAtLeast(1)
+            val days = (parsed.toRemind + perDay - 1) / perDay
+            if (parsed.toRemind > 0 && !p.isUpdateOfActive) Text("Takes about $days day(s) at $perDay SMS/day.", color = StatusColors.muted)
+        }
+        val plan = p.plan
+        if (p.isUpdateOfActive && plan != null) {
+            Section("Updating the current list") {
+                Text(
+                    "${plan.removed} dealer(s) filed since the last import and are removed from the queue. " +
+                        "${plan.pending} still-pending dealer(s) from before go to the top of the queue.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                ChoiceRow(
+                    selected = !p.newRound, onClick = { vm.setNewRound(false) },
+                    title = "Update statuses only",
+                    detail = "Send to the ${plan.pending} pending + ${plan.newOnes} new dealer(s). " +
+                        "The ${plan.reminded} dealer(s) already reminded are not messaged again.",
+                )
+                ChoiceRow(
+                    selected = p.newRound, onClick = { vm.setNewRound(true) },
+                    title = "New reminder round",
+                    detail = "Remind everyone still not filed: ${plan.pending} pending first, then " +
+                        "${plan.reminded} already reminded and ${plan.newOnes} new – ${plan.pending + plan.reminded + plan.newOnes} in total.",
+                )
+            }
         }
         val sample = parsed.dealers.firstOrNull { it.pending != Pending.NONE && it.phone != null }
         if (sample != null) {
@@ -168,8 +210,9 @@ fun DealerScreen(vm: MainViewModel, id: Long) {
         value = vm.preview(d)
     }
     var editPhone by remember { mutableStateOf(false) }
-    val smsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) vm.sendOne(d.id) else vm.message.value = "SMS permission is needed."
+    val needsSim = vm.settings.dualSim || vm.settings.simSlot >= 0
+    val smsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result.values.all { it }) vm.sendOne(d.id) else vm.message.value = "SMS" + (if (needsSim) " and phone" else "") + " permission is needed."
     }
     val fmt = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale.ENGLISH) }
 
@@ -190,8 +233,10 @@ fun DealerScreen(vm: MainViewModel, id: Long) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("SMS", Modifier.width(110.dp), color = StatusColors.muted); SmsBadge(d.status)
             }
+            if (d.carryOver && d.status == SmsStatus.QUEUED) Text("↑ Pending from before – sends first", color = StatusColors.warn)
+            if (d.reminders > 0) KeyValue("Reminders", "${d.reminders} sent")
             if (d.attempts > 0) KeyValue("Attempts", "${d.attempts}")
-            d.sentAt?.let { KeyValue("Sent", fmt.format(Date(it))) }
+            d.sentAt?.let { KeyValue("Sent", fmt.format(Date(it)) + if (vm.settings.dualSim) " · SIM ${d.simSlot + 1}" else "") }
             d.deliveredAt?.let { KeyValue("Delivered", fmt.format(Date(it))) }
             d.lastError?.let { Text(it, color = StatusColors.bad) }
         }
@@ -208,8 +253,8 @@ fun DealerScreen(vm: MainViewModel, id: Long) {
                 Button(onClick = {
                     when {
                         vm.settings.sendMode == SendMode.ONE_TAP -> vm.startOneTap(d.id)
-                        SmsSender.hasPermission(ctx) -> vm.sendOne(d.id)
-                        else -> smsPermission.launch(Manifest.permission.SEND_SMS)
+                        SmsSender.hasPermission(ctx) && (!needsSim || SmsSender.hasPhonePermission(ctx)) -> vm.sendOne(d.id)
+                        else -> smsPermission.launch(arrayOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_PHONE_STATE))
                     }
                 }, modifier = Modifier.weight(1f)) {
                     Text(if (d.status in setOf(SmsStatus.SENT, SmsStatus.DELIVERED, SmsStatus.FAILED)) "Resend now" else "Send now")
@@ -256,7 +301,14 @@ fun SettingsScreen(vm: MainViewModel) {
     val quota by vm.quota.collectAsStateWithLifecycle()
 
     var limit by remember { mutableStateOf(s.dailyLimit.toString()) }
-    var usedToday by remember(quota.used) { mutableStateOf(quota.used.toString()) }
+    var dualSim by remember { mutableStateOf(s.dualSim) }
+    var sim1Limit by remember { mutableStateOf(s.sim1Limit.toString()) }
+    var sim2Limit by remember { mutableStateOf(s.sim2Limit.toString()) }
+    var simSlot by remember { mutableStateOf(s.simSlot) }
+    // Today's actual usage per SIM slot (editable in case SMS were sent outside the app).
+    val actualUsed by produceState(listOf(0, 0), quota) { value = listOf(vm.repo.usedOn(0), vm.repo.usedOn(1)) }
+    var used1 by remember(actualUsed) { mutableStateOf(actualUsed[0].toString()) }
+    var used2 by remember(actualUsed) { mutableStateOf(actualUsed[1].toString()) }
     var sender by remember { mutableStateOf(s.sender) }
     var template by remember { mutableStateOf(s.template) }
     var autoSend by remember { mutableStateOf(s.autoSend) }
@@ -264,23 +316,54 @@ fun SettingsScreen(vm: MainViewModel) {
     var sendAt by remember { mutableStateOf("%02d:%02d".format(s.sendAtMinutes / 60, s.sendAtMinutes % 60)) }
     var hours by remember { mutableStateOf("${s.startHour}-${s.endHour}") }
     var gap by remember { mutableStateOf(s.gapSeconds.toString()) }
-    var sim by remember { mutableStateOf(s.subscriptionId to s.subscriptionLabel) }
-    var sims by remember { mutableStateOf(SmsSender.simCards(ctx)) }
-    var simMenu by remember { mutableStateOf(false) }
-    val phonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        sims = SmsSender.simCards(ctx); if (sims.isNotEmpty()) simMenu = true
-    }
 
     Page(vm, "Settings") {
-        Section("Daily SMS limit") {
-            OutlinedTextField(
-                value = limit, onValueChange = { limit = it.filter(Char::isDigit) }, label = { Text("SMS per day") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = usedToday, onValueChange = { usedToday = it.filter(Char::isDigit) }, label = { Text("Already used today") },
-                supportingText = { Text("Correct this if you sent SMS from the phone's own messaging app today.") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        Section("SIM cards & daily SMS limit") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Use both SIM cards")
+                    Text(
+                        "Each SIM gets its own daily limit, so you can send more per day.",
+                        style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
+                    )
+                }
+                Switch(checked = dualSim, onCheckedChange = { dualSim = it })
+            }
+            if (dualSim) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NumberField(sim1Limit, { sim1Limit = it }, "${SmsSender.slotLabel(ctx, 0)} / day", Modifier.weight(1f))
+                    NumberField(sim2Limit, { sim2Limit = it }, "${SmsSender.slotLabel(ctx, 1)} / day", Modifier.weight(1f))
+                }
+                Text(
+                    "Total ${(sim1Limit.toIntOrNull() ?: 0) + (sim2Limit.toIntOrNull() ?: 0)} SMS per day. " +
+                        "The app uses the SIM with more SMS left. Set 0 to stop using a SIM." +
+                        if (mode == SendMode.ONE_TAP) " In one-tap mode the app tells you which SIM to pick in Messages." else "",
+                    style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NumberField(used1, { used1 = it }, "Used today: SIM 1", Modifier.weight(1f))
+                    NumberField(used2, { used2 = it }, "Used today: SIM 2", Modifier.weight(1f))
+                }
+            } else {
+                NumberField(limit, { limit = it }, "SMS per day", Modifier.fillMaxWidth())
+                Text("Send from", style = MaterialTheme.typography.bodySmall, color = StatusColors.muted)
+                Row {
+                    listOf(-1 to "Default SIM", 0 to "SIM 1", 1 to "SIM 2").forEach { (slot, label) ->
+                        Row(Modifier.clickable { simSlot = slot }.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = simSlot == slot, onClick = { simSlot = slot })
+                            Text(label)
+                        }
+                    }
+                }
+                val bucket = simSlot.coerceAtLeast(0)
+                NumberField(
+                    if (bucket == 0) used1 else used2, { if (bucket == 0) used1 = it else used2 = it },
+                    "Already used today", Modifier.fillMaxWidth(),
+                )
+            }
+            Text(
+                "Correct \"used today\" if you sent SMS from the phone's own messaging app.",
+                style = MaterialTheme.typography.bodySmall, color = StatusColors.muted,
             )
         }
         Section("Message") {
@@ -331,20 +414,6 @@ fun SettingsScreen(vm: MainViewModel) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
         }
-        if (mode == SendMode.AUTO) Section("SIM card") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(sim.second, Modifier.weight(1f))
-                TextButton(onClick = {
-                    if (sims.isEmpty()) phonePermission.launch(Manifest.permission.READ_PHONE_STATE) else simMenu = true
-                }) { Text("Change") }
-            }
-            androidx.compose.material3.DropdownMenu(expanded = simMenu, onDismissRequest = { simMenu = false }) {
-                androidx.compose.material3.DropdownMenuItem(text = { Text("Default SIM") }, onClick = { sim = -1 to "Default SIM"; simMenu = false })
-                sims.forEach { (id, label) ->
-                    androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { sim = id to label; simMenu = false })
-                }
-            }
-        }
         if (!BuildConfig.SELF_UPDATE) Section("App version") {
             Text("Version ${BuildConfig.VERSION_NAME}")
             Text("Updates come through the Play Store.", style = MaterialTheme.typography.bodySmall, color = StatusColors.muted)
@@ -388,11 +457,14 @@ fun SettingsScreen(vm: MainViewModel) {
                 startHour = start.coerceIn(0, 23)
                 endHour = end.coerceIn(startHour + 1, 24)
                 gapSeconds = gap.toIntOrNull() ?: 4
-                subscriptionId = sim.first
-                subscriptionLabel = sim.second
                 sendModeChoice = mode
+                this.dualSim = dualSim
+                this.sim1Limit = sim1Limit.toIntOrNull() ?: 100
+                this.sim2Limit = sim2Limit.toIntOrNull() ?: 100
+                this.simSlot = simSlot
             }
-            usedToday.toIntOrNull()?.let { if (it != quota.used) vm.setUsedToday(it) }
+            used1.toIntOrNull()?.let { if (it != actualUsed[0]) vm.setUsedToday(0, it) }
+            used2.toIntOrNull()?.let { if (it != actualUsed[1]) vm.setUsedToday(1, it) }
             vm.back()
         }, modifier = Modifier.fillMaxWidth()) { Text("Save") }
         Text(
